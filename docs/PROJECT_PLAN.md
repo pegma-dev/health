@@ -2,7 +2,7 @@
 
 ## Status
 
-**Stage:** Phase 1 implemented (`0.1.0`, public API unstable)
+**Stage:** `0.1.1` on npm; trusted publishing configured. Public API unstable.
 
 **First named consumers:** pegma.dev Worker (`pegma-dev-api`) and the
 RetireGolden account API (`GET /api/health`).
@@ -81,13 +81,13 @@ domain collections.
 Check types, aggregator, HTTP helper, process/detail/store ping, memory-store
 tests, CI.
 
-### Phase 2 — reference wiring
+### Phase 2 — reference wiring (done)
 
 pegma.dev Worker and RetireGolden `/api/health` consume the package.
 
-### Phase 3 — publish
+### Phase 3 — publish (done)
 
-Trusted-publisher npm release once consumers are green.
+Trusted-publisher npm release; `0.1.1` on the public registry.
 
 ## Near-term backlog
 
