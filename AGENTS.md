@@ -60,8 +60,11 @@ Work on a `claude/*` branch and open a pull request. The gate is
 and 24. Store tests run against `createMemoryStore()` from
 `@pegma/storage-core`.
 
-Publishing is trusted-publisher only; no tokens exist. Follow
-`docs/RELEASING.md`.
+Publishing is trusted-publisher only; no tokens exist. A release starts from a
+protected signed annotated `vX.Y.Z` tag already on `origin/main`, followed by
+`gh release create vX.Y.Z --verify-tag`. The unprivileged preparation job runs
+the gate and packs the exact artifact; only the minimal publish job receives
+OIDC authority. See `docs/RELEASING.md`.
 
 ## Where things stand
 

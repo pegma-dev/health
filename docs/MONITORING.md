@@ -3,10 +3,10 @@
 Public health responses from `@pegma/health` are safe to scrape. Hosts map
 `toHealthResponse` to HTTP:
 
-| Aggregated `status` | HTTP | `ok` |
-| ------------------- | ---- | ---- |
-| `ok`                | 200  | true |
-| `degraded`          | 200  | true |
+| Aggregated `status` | HTTP | `ok`  |
+| ------------------- | ---- | ----- |
+| `ok`                | 200  | true  |
+| `degraded`          | 200  | true  |
 | `fail`              | 503  | false |
 
 ## Example body
@@ -53,11 +53,11 @@ instead of relying on status codes alone.
 
 Hosts emit Spine events through their teed loggers:
 
-| Event            | Level | When                          |
-| ---------------- | ----- | ----------------------------- |
-| `health.ok`      | info  | All checks ok                 |
-| `health.degraded`| warn  | At least one degraded, none fail |
-| `health.failed`  | error | At least one fail             |
+| Event             | Level | When                             |
+| ----------------- | ----- | -------------------------------- |
+| `health.ok`       | info  | All checks ok                    |
+| `health.degraded` | warn  | At least one degraded, none fail |
+| `health.failed`   | error | At least one fail                |
 
 Useful monitors:
 
