@@ -92,4 +92,5 @@ Trusted-publisher npm release once consumers are green.
 ## Near-term backlog
 
 - Optional timeout / concurrency options on the aggregator.
-- Document Datadog Synthetics assertions against the public JSON shape.
+- See [MONITORING.md](MONITORING.md) for Datadog Synthetics and log-monitor
+  assertions against the public JSON shape.
