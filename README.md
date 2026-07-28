@@ -61,7 +61,8 @@ npm run check
 npm test
 ```
 
-See [docs/RELEASING.md](docs/RELEASING.md) for trusted-publisher releases.
+Maintainers should follow [the release runbook](docs/RELEASING.md). Releases
+publish only from protected signed tags through npm trusted publishing.
 
 ## License
 
