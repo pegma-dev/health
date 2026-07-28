@@ -68,8 +68,9 @@ OIDC authority. See `docs/RELEASING.md`.
 
 ## Where things stand
 
-`@pegma/health` offers check contracts, `runHealthChecks`, `toHealthResponse`,
-`createProcessCheck`, `createDetailCheck`, and `createStorePingCheck`.
+`@pegma/health` is published at `0.1.1`. It offers check contracts,
+`runHealthChecks`, `toHealthResponse`, `createProcessCheck`,
+`createDetailCheck`, and `createStorePingCheck`.
 
 Siblings: [spine](https://github.com/pegma-dev/spine),
 [storage-core](https://github.com/pegma-dev/storage-core),
