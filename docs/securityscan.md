@@ -41,6 +41,10 @@ _Findings are appended below as the scan progresses._
 - **Recommendation:** Replace `error.message` with a static, enumerated reason
   code (e.g. `"store_ping_failed"`) and log the full error server-side via the
   injected `Logger` instead of returning it.
+- ✅ Resolved 2026-07-29 — `createStorePingCheck` now reports only the
+  enumerated reasons `store_ping_failed` / `store_ping_timeout`, never
+  `error.message`; covered by a test asserting a connection string never
+  reaches the response.
 
 ---
 
@@ -71,6 +75,9 @@ _Findings are appended below as the scan progresses._
 - **Recommendation:** Build the map with `Object.create(null)` or a `Map`
   converted at serialization time, and reject or deduplicate duplicate check
   names at registration.
+- ✅ Resolved 2026-07-29 — `runHealthChecks` builds `checks` with
+  `Object.create(null)` so a `__proto__` check is a normal own property, and
+  rejects duplicate check names before running any check.
 
 ---
 
@@ -91,6 +98,13 @@ _Findings are appended below as the scan progresses._
 - **Recommendation:** Wrap each `check.run()` in try/catch and map throws to
   `{ status: "fail", detail: { reason: "check_threw" } }`; consider a
   per-check default timeout like the one in `createStorePingCheck`.
+- ✅ Resolved 2026-07-29 — each `check.run()` is wrapped: a throw becomes
+  `{ status: "fail", detail: { reason: "check_threw" } }` with the error text
+  logged as `health.check_threw` instead of returned. No global timeout was
+  added: capping every host check at a fixed deadline would turn a slow but
+  healthy check into a false 503, and making the deadline configurable is new
+  public API rather than a fix. A check that never settles remains the host's
+  responsibility, now stated in the README and `docs/MONITORING.md`.
 
 ---
 
@@ -111,6 +125,10 @@ _Findings are appended below as the scan progresses._
 - **Recommendation:** Document that hosts SHOULD place rate limiting or a
   short cache in front of the public health route, or scrape it only from
   trusted monitors.
+- ✅ Resolved 2026-07-29 — documented as a host responsibility:
+  `docs/MONITORING.md` gains a "Protect the route from amplification" section
+  and the package README repeats it. No code change; the put-then-get round
+  trip is required by the repository's hard rules.
 
 ---
 
@@ -151,14 +169,15 @@ _Findings are appended below as the scan progresses._
 
 ## Summary
 
-| ID      | Severity      | Finding                                                        |
-| ------- | ------------- | -------------------------------------------------------------- |
-| SEC-001 | Medium        | Store error messages leak into public health response `detail` |
-| SEC-002 | Low           | `__proto__`/duplicate check names corrupt aggregated results   |
-| SEC-003 | Low           | Uncaught check exceptions / no timeout break health contract   |
-| SEC-004 | Informational | Storage write per public health request (accepted by design)   |
+| ID      | Severity      | Finding                                                        | Status             |
+| ------- | ------------- | -------------------------------------------------------------- | ------------------ |
+| SEC-001 | Medium        | Store error messages leak into public health response `detail` | ✅ Resolved        |
+| SEC-002 | Low           | `__proto__`/duplicate check names corrupt aggregated results   | ✅ Resolved        |
+| SEC-003 | Low           | Uncaught check exceptions / no timeout break health contract   | ✅ Resolved        |
+| SEC-004 | Informational | Storage write per public health request (accepted by design)   | ✅ Resolved (docs) |
 
 **Scan completed:** 2026-07-28. No files other than this report were modified.
 
-
-
+**Remediation:** 2026-07-29. SEC-001 through SEC-004 addressed in
+`packages/health/src/index.ts`, its tests, the package README, and
+`docs/MONITORING.md`; released as `@pegma/health` 0.1.2.

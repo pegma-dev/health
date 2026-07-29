@@ -90,7 +90,58 @@ describe("createStorePingCheck", () => {
     });
     const result = await check.run();
     expect(result.status).toBe("fail");
-    expect(result.detail).toEqual({ reason: "tables unavailable" });
+    expect(result.detail).toEqual({ reason: "store_ping_failed" });
+  });
+
+  it("never leaks the store error message into public detail", async () => {
+    const brokenStore = {
+      collection() {
+        return {
+          async get() {
+            return null;
+          },
+          async put() {
+            throw new Error(
+              "AccountName=pegmaprod;AccountKey=super-secret-key==",
+            );
+          },
+        };
+      },
+    } as unknown as Store;
+    const check = createStorePingCheck({
+      store: brokenStore,
+      collection: healthProbeCollection,
+      clock: fixedClock(NOW),
+    });
+    const result = await check.run();
+    expect(JSON.stringify(result)).not.toContain("AccountKey");
+    expect(result.detail).toEqual({ reason: "store_ping_failed" });
+  });
+
+  it("reports a timeout as its own enumerated reason", async () => {
+    const hangingStore = {
+      collection() {
+        return {
+          async get() {
+            return null;
+          },
+          put() {
+            return new Promise<void>(() => {
+              // never settles
+            });
+          },
+        };
+      },
+    } as unknown as Store;
+    const check = createStorePingCheck({
+      store: hangingStore,
+      collection: healthProbeCollection,
+      clock: fixedClock(NOW),
+      timeoutMs: 5,
+    });
+    const result = await check.run();
+    expect(result.status).toBe("fail");
+    expect(result.detail).toEqual({ reason: "store_ping_timeout" });
   });
 });
 
@@ -163,5 +214,74 @@ describe("runHealthChecks", () => {
       body: result,
     });
     expect(events).toEqual([{ level: "error", message: "health.failed" }]);
+  });
+
+  it("keeps a check named __proto__ visible in the aggregate", async () => {
+    const result = await runHealthChecks({
+      service: "retiregolden-api",
+      clock: fixedClock(NOW),
+      checks: [createProcessCheck(), failingCheck("__proto__", "fail")],
+    });
+    expect(Object.keys(result.checks)).toEqual(["process", "__proto__"]);
+    expect(result.checks["__proto__"]).toEqual({ status: "fail" });
+    expect(result.status).toBe("fail");
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result.checks)).toContain(
+      '"__proto__":{"status":"fail"}',
+    );
+  });
+
+  it("rejects duplicate check names instead of dropping a result", async () => {
+    await expect(
+      runHealthChecks({
+        service: "retiregolden-api",
+        clock: fixedClock(NOW),
+        checks: [
+          failingCheck("storage", "fail"),
+          createProcessCheck("storage"),
+        ],
+      }),
+    ).rejects.toThrow("duplicate health check names: storage");
+  });
+
+  it("maps a throwing check to fail without leaking the error", async () => {
+    const events: Array<{
+      level: string;
+      message: string;
+      fields?: Readonly<Record<string, unknown>>;
+    }> = [];
+    const logger: Logger = {
+      log(level, message, fields) {
+        events.push({ level, message, ...(fields ? { fields } : {}) });
+      },
+    };
+    const throwingCheck: HealthCheck = {
+      name: "storage",
+      async run() {
+        throw new Error("AccountKey=super-secret-key==");
+      },
+    };
+    const result = await runHealthChecks({
+      service: "retiregolden-api",
+      clock: fixedClock(NOW),
+      logger,
+      checks: [createProcessCheck(), throwingCheck],
+    });
+    expect(result.status).toBe("fail");
+    expect(result.checks["storage"]).toEqual({
+      status: "fail",
+      detail: { reason: "check_threw" },
+    });
+    expect(JSON.stringify(result)).not.toContain("AccountKey");
+    expect(toHealthResponse(result).status).toBe(503);
+    expect(events.map((event) => event.message)).toEqual([
+      "health.check_threw",
+      "health.failed",
+    ]);
+    expect(events[0]?.fields).toEqual({
+      service: "retiregolden-api",
+      check: "storage",
+      error: "AccountKey=super-secret-key==",
+    });
   });
 });

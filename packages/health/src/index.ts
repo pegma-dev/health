@@ -60,6 +60,9 @@ const DEFAULT_PARTITION = "__health__";
 const DEFAULT_PROBE_ID = "ping";
 const DEFAULT_TIMEOUT_MS = 5_000;
 
+/** Marks a probe that exceeded its own timeout rather than rejecting. */
+class ProbeTimeoutError extends Error {}
+
 function requireString(value: StoredRecord, field: string): string {
   const raw = value[field];
   if (typeof raw !== "string") {
@@ -170,12 +173,17 @@ export function createStorePingCheck(
           latencyMs: Date.now() - started,
         };
       } catch (error) {
+        // Never surface the underlying error text: store adapter messages
+        // routinely embed account names, URLs, and request ids, and this detail
+        // is served on a public endpoint. Report an enumerated reason instead.
         return {
           status: "fail",
           latencyMs: Date.now() - started,
           detail: {
             reason:
-              error instanceof Error ? error.message : "store_ping_failed",
+              error instanceof ProbeTimeoutError
+                ? "store_ping_timeout"
+                : "store_ping_failed",
           },
         };
       }
@@ -186,7 +194,7 @@ export function createStorePingCheck(
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new Error(`timed out after ${timeoutMs}ms`));
+      reject(new ProbeTimeoutError(`timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     promise.then(
       (value) => {
@@ -222,19 +230,62 @@ function worstStatus(statuses: readonly CheckStatus[]): CheckStatus {
   return worst;
 }
 
+function duplicateNames(checks: readonly HealthCheck[]): readonly string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const check of checks) {
+    if (seen.has(check.name)) {
+      duplicates.add(check.name);
+    }
+    seen.add(check.name);
+  }
+  return [...duplicates];
+}
+
+/**
+ * Runs one check, mapping a throw to a `fail` result so that one broken check
+ * cannot turn the whole probe into an unhandled rejection. The error text goes
+ * to the host logger only — never into the public response detail.
+ */
+async function runCheck(
+  check: HealthCheck,
+  service: string,
+  logger: Logger,
+): Promise<CheckResult> {
+  try {
+    return await check.run();
+  } catch (error) {
+    logger.log("error", "health.check_threw", {
+      service,
+      check: check.name,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { status: "fail", detail: { reason: "check_threw" } };
+  }
+}
+
 /**
  * Runs every registered check, aggregates status, and emits a Spine log event.
+ *
+ * Check names must be unique; a duplicate would silently drop a result from the
+ * aggregate, so it is rejected instead.
  */
 export async function runHealthChecks(
   options: RunHealthChecksOptions,
 ): Promise<HealthResult> {
   const clock = options.clock ?? systemClock;
   const logger = options.logger ?? noopLogger;
+  const duplicates = duplicateNames(options.checks);
+  if (duplicates.length > 0) {
+    throw new Error(`duplicate health check names: ${duplicates.join(", ")}`);
+  }
   const checkedAt = clock.now();
-  const checks: Record<string, CheckResult> = {};
+  // A null-prototype map: assigning a check named `__proto__` to a plain object
+  // would hit the prototype setter and drop the result from the aggregate.
+  const checks = Object.create(null) as Record<string, CheckResult>;
 
   for (const check of options.checks) {
-    checks[check.name] = await check.run();
+    checks[check.name] = await runCheck(check, options.service, logger);
   }
 
   const status = worstStatus(
