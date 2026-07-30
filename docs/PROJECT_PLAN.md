@@ -89,7 +89,7 @@ pegma.dev Worker and RetireGolden `/api/health` consume the package.
 
 ### Phase 3 — publish (done)
 
-Trusted-publisher npm release; `0.1.1` on the public registry.
+Trusted-publisher npm release; `0.1.2` on the public registry.
 
 ## Near-term backlog
 

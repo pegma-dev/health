@@ -68,7 +68,7 @@ OIDC authority. See `docs/RELEASING.md`.
 
 ## Where things stand
 
-`@pegma/health` is published at `0.1.1`. It offers check contracts,
+`@pegma/health` is published at `0.1.2`. It offers check contracts,
 `runHealthChecks`, `toHealthResponse`, `createProcessCheck`,
 `createDetailCheck`, and `createStorePingCheck`.
 
