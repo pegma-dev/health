@@ -59,6 +59,7 @@ export interface HealthProbeRecord {
 const DEFAULT_PARTITION = "__health__";
 const DEFAULT_PROBE_ID = "ping";
 const DEFAULT_TIMEOUT_MS = 5_000;
+const MAX_LOGGED_ERROR_CHARS = 300;
 
 /** Marks a probe that exceeded its own timeout rather than rejecting. */
 class ProbeTimeoutError extends Error {}
@@ -243,6 +244,19 @@ function duplicateNames(checks: readonly HealthCheck[]): readonly string[] {
 }
 
 /**
+ * Error text is host-supplied and may carry remote input, so control characters
+ * (which forge log lines in text-oriented sinks) are flattened and the string is
+ * capped before it reaches a logger.
+ */
+function loggableError(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  const flattened = text.replace(/[\u0000-\u001F\u007F]/g, " ");
+  return flattened.length > MAX_LOGGED_ERROR_CHARS
+    ? `${flattened.slice(0, MAX_LOGGED_ERROR_CHARS)}...`
+    : flattened;
+}
+
+/**
  * Runs one check, mapping a throw to a `fail` result so that one broken check
  * cannot turn the whole probe into an unhandled rejection. The error text goes
  * to the host logger only — never into the public response detail.
@@ -258,7 +272,7 @@ async function runCheck(
     logger.log("error", "health.check_threw", {
       service,
       check: check.name,
-      error: error instanceof Error ? error.message : String(error),
+      error: loggableError(error),
     });
     return { status: "fail", detail: { reason: "check_threw" } };
   }

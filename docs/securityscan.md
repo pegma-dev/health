@@ -180,4 +180,5 @@ _Findings are appended below as the scan progresses._
 
 **Remediation:** 2026-07-29. SEC-001 through SEC-004 addressed in
 `packages/health/src/index.ts`, its tests, the package README, and
-`docs/MONITORING.md`; released as `@pegma/health` 0.1.2.
+`docs/MONITORING.md`; the manifest is prepared for a `@pegma/health` 0.1.2
+release, which publishes only from a signed release tag.

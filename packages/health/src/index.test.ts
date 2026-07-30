@@ -16,6 +16,14 @@ import type { Store } from "@pegma/storage-core";
 
 const NOW = "2026-07-27T21:00:00.000Z";
 
+/**
+ * Stands in for a store adapter error that embeds credential material. The
+ * value is deliberately an obvious placeholder so secret scanners ignore it,
+ * while the `AccountKey` marker still proves nothing reached the response.
+ */
+const SECRET_SHAPED_MESSAGE =
+  "AccountName=example;AccountKey=PLACEHOLDER_NOT_A_REAL_KEY";
+
 function failingCheck(
   name: string,
   status: CheckResult["status"],
@@ -101,9 +109,7 @@ describe("createStorePingCheck", () => {
             return null;
           },
           async put() {
-            throw new Error(
-              "AccountName=pegmaprod;AccountKey=super-secret-key==",
-            );
+            throw new Error(SECRET_SHAPED_MESSAGE);
           },
         };
       },
@@ -258,7 +264,7 @@ describe("runHealthChecks", () => {
     const throwingCheck: HealthCheck = {
       name: "storage",
       async run() {
-        throw new Error("AccountKey=super-secret-key==");
+        throw new Error(SECRET_SHAPED_MESSAGE);
       },
     };
     const result = await runHealthChecks({
@@ -281,7 +287,36 @@ describe("runHealthChecks", () => {
     expect(events[0]?.fields).toEqual({
       service: "retiregolden-api",
       check: "storage",
-      error: "AccountKey=super-secret-key==",
+      error: SECRET_SHAPED_MESSAGE,
     });
+  });
+
+  it("flattens and caps the logged error text", async () => {
+    const events: Array<Readonly<Record<string, unknown>> | undefined> = [];
+    const logger: Logger = {
+      log(_level, _message, fields) {
+        events.push(fields);
+      },
+    };
+    const throwingCheck: HealthCheck = {
+      name: "storage",
+      async run() {
+        throw new Error(
+          "first line\r\nfake: forged log line " + "x".repeat(400),
+        );
+      },
+    };
+    const result = await runHealthChecks({
+      service: "retiregolden-api",
+      clock: fixedClock(NOW),
+      logger,
+      checks: [throwingCheck],
+    });
+    expect(result.status).toBe("fail");
+    const logged = events[0]?.["error"];
+    expect(logged).toBeTypeOf("string");
+    expect(logged as string).not.toMatch(/[\u0000-\u001F\u007F]/);
+    expect((logged as string).length).toBe(303);
+    expect(logged as string).toMatch(/\.\.\.$/);
   });
 });
