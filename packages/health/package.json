@@ -1,6 +1,6 @@
 {
   "name": "@pegma/health",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Composable health probes and HTTP responses for Pegma hosts.",
   "license": "MIT",
   "type": "module",
@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "@pegma/spine": "0.1.1",
-    "@pegma/storage-core": "0.3.0"
+    "@pegma/storage-core": "0.4.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
