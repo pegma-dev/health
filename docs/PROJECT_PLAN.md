@@ -2,7 +2,9 @@
 
 ## Status
 
-**Stage:** `0.1.1` on npm; trusted publishing configured. Public API unstable.
+**Stage:** `0.1.2` on npm; trusted publishing configured. `0.2.0` is prepared,
+aligning `@pegma/storage-core` at `0.4.0` across the stack. Public API
+unstable.
 
 **First named consumers:** pegma.dev Worker (`pegma-dev-api`) and the
 RetireGolden account API (`GET /api/health`).
