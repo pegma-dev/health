@@ -1,6 +1,6 @@
 {
   "name": "@pegma/health",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Composable health probes and HTTP responses for Pegma hosts.",
   "license": "MIT",
   "type": "module",

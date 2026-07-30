@@ -45,6 +45,15 @@ Create one Synthetic HTTP test per host:
 
 Suggested schedule: every 1–5 minutes. Alert on consecutive failures (e.g. 2).
 
+## Protect the route from amplification
+
+`createStorePingCheck` performs a real write plus a read on every call — that is
+the point, a connectivity ping would lie. It also means each request to the
+public route costs one storage write against a metered backend. Hosts SHOULD put
+rate limiting (or a short response cache, a few seconds) in front of the route,
+or expose the store ping only on a route scraped by trusted monitors. This
+package deliberately owns no rate limiter.
+
 `degraded` still returns HTTP 200 with `ok: true`. If you want to page on
 degraded storage/logging, add a JSON assertion on `$.status` or a log monitor
 instead of relying on status codes alone.
@@ -53,11 +62,22 @@ instead of relying on status codes alone.
 
 Hosts emit Spine events through their teed loggers:
 
-| Event             | Level | When                             |
-| ----------------- | ----- | -------------------------------- |
-| `health.ok`       | info  | All checks ok                    |
-| `health.degraded` | warn  | At least one degraded, none fail |
-| `health.failed`   | error | At least one fail                |
+| Event                | Level | When                              |
+| -------------------- | ----- | --------------------------------- |
+| `health.ok`          | info  | All checks ok                     |
+| `health.degraded`    | warn  | At least one degraded, none fail  |
+| `health.failed`      | error | At least one fail                 |
+| `health.check_threw` | error | A check threw; reported as `fail` |
+
+A check that throws is reported publicly as
+`{ "status": "fail", "detail": { "reason": "check_threw" } }`. The error text is
+in the `health.check_threw` log event only — public detail never carries it.
+Store ping failures report `store_ping_failed`, `store_ping_timeout`, or
+`round_trip_mismatch` for the same reason.
+
+`runHealthChecks` bounds no host check itself: a check that never settles hangs
+the response. Give every custom check its own deadline, as
+`createStorePingCheck` does with `timeoutMs`.
 
 Useful monitors:
 
