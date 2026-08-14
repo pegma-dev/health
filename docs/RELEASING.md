@@ -41,14 +41,17 @@ The release workflow verifies that the tag:
 - points to the checkout and the GitHub release-event commit; and
 - is contained in `origin/main`.
 
-Its preparation job has no OIDC permission. It enables Corepack for the pinned
-pnpm version without dependency caching, runs the full gate, builds and packs
-once, smoke-tests the tarball from a clean consumer, records its SHA-1 and
-SHA-512 integrity, and uploads the exact prepared artifact.
+Its preparation job has no OIDC permission. It installs the reviewed npm
+`11.18.0` release and the pinned pnpm without dependency caching, runs the
+full gate, builds and packs once with that npm CLI, smoke-tests the tarball
+from a clean consumer, records its SHA-1 and SHA-512 integrity, and uploads
+the exact prepared artifact. The lockfile source of truth is `pnpm-lock.yaml`.
 
 Only the `npm-publish` job receives `id-token: write`. It installs no
-dependencies, verifies the prepared manifest and tarball hashes against the
-release commit, and publishes that tarball with npm provenance.
+dependencies and does not download pnpm. It runs
+`node scripts/release-packages.mjs publish`, verifies the prepared manifest
+and tarball hashes against the release commit, and publishes that tarball
+with npm provenance.
 
 ## Safe retry
 

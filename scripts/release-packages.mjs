@@ -58,23 +58,25 @@ function run(command, arguments_, options = {}) {
   return result;
 }
 
-function runCli(command, arguments_, options = {}) {
-  return run(
-    process.platform === "win32" ? `${command}.cmd` : command,
-    arguments_,
-    {
-      ...options,
-      shell: process.platform === "win32",
-    },
-  );
+function runPnpm(arguments_, options = {}) {
+  return run(process.platform === "win32" ? "pnpm.cmd" : "pnpm", arguments_, {
+    ...options,
+    shell: process.platform === "win32",
+  });
 }
 
-function runPnpm(arguments_, options = {}) {
-  return runCli("pnpm", arguments_, options);
+function npmEnvironment(env) {
+  const next = { ...env };
+  delete next.npm_execpath;
+  return next;
 }
 
 function runNpm(arguments_, options = {}) {
-  return runCli("npm", arguments_, options);
+  return run(process.platform === "win32" ? "npm.cmd" : "npm", arguments_, {
+    ...options,
+    env: npmEnvironment(options.env ?? process.env),
+    shell: process.platform === "win32",
+  });
 }
 
 function gitCommand() {
@@ -168,6 +170,45 @@ function lockfileImporterBlock(lockfile, importer) {
   return block.join("\n");
 }
 
+export function parsePnpmImporterDependencies(block) {
+  const dependencies = new Map();
+  let current = null;
+  let inDependencies = false;
+  for (const line of block.split("\n")) {
+    if (line === "    dependencies:") {
+      inDependencies = true;
+      current = null;
+      continue;
+    }
+    if (inDependencies && /^    \S/u.test(line)) {
+      break;
+    }
+    if (!inDependencies) continue;
+    const name = /^      ('[^']+'|[^:]+):$/u.exec(line);
+    if (name !== null) {
+      const raw = name[1];
+      current = raw.startsWith("'") ? raw.slice(1, -1) : raw;
+      dependencies.set(current, { specifier: null, version: null });
+      continue;
+    }
+    if (current === null) continue;
+    const specifier = /^        specifier: (.+)$/u.exec(line);
+    if (specifier !== null) {
+      dependencies.get(current).specifier = specifier[1];
+      continue;
+    }
+    const version = /^        version: (.+)$/u.exec(line);
+    if (version !== null) {
+      dependencies.get(current).version = version[1];
+    }
+  }
+  return dependencies;
+}
+
+function resolvedVersionMatches(resolved, pinned) {
+  return resolved === pinned || resolved.startsWith(`${pinned}(`);
+}
+
 async function assertPnpmLockfileSynchronized(root, manifest) {
   const lockfile = await readFile(join(root, "pnpm-lock.yaml"), "utf8");
   if (!/^lockfileVersion:/u.test(lockfile)) {
@@ -180,9 +221,13 @@ async function assertPnpmLockfileSynchronized(root, manifest) {
   if (block === null) {
     fail(`${PACKAGE.name} is not synchronized with pnpm-lock.yaml`);
   }
-  for (const [name, version] of Object.entries(manifest.dependencies ?? {})) {
-    const nameLine = name.startsWith("@") ? `'${name}':` : `${name}:`;
-    if (!block.includes(nameLine) || !block.includes(`specifier: ${version}`)) {
+  const locked = parsePnpmImporterDependencies(block);
+  for (const [name, pinned] of Object.entries(manifest.dependencies ?? {})) {
+    const entry = locked.get(name);
+    if (
+      entry?.specifier !== pinned ||
+      !resolvedVersionMatches(entry.version ?? "", pinned)
+    ) {
       fail(`${PACKAGE.name} is not synchronized with pnpm-lock.yaml`);
     }
   }

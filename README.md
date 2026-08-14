@@ -55,6 +55,7 @@ const { status, body } = toHealthResponse(result);
 Requires Node.js 22+.
 
 ```sh
+corepack enable
 pnpm install --frozen-lockfile
 pnpm run format:check
 pnpm run check

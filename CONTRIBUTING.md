@@ -16,6 +16,7 @@ Thank you for helping improve Health.
 Health requires Node.js 22 or newer.
 
 ```sh
+corepack enable
 pnpm install --frozen-lockfile
 pnpm run check
 pnpm test
