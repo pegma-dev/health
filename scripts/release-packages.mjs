@@ -18,7 +18,7 @@ const PACKAGE = {
   name: "@pegma/health",
 };
 const REPOSITORY_URL = "git+https://github.com/pegma-dev/health.git";
-const REVIEWED_NPM_VERSION = "11.18.0";
+const REVIEWED_PNPM_VERSION = "10.34.5";
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
 
 export const RELEASE_PACKAGES = [PACKAGE];
@@ -58,14 +58,23 @@ function run(command, arguments_, options = {}) {
   return result;
 }
 
+function runCli(command, arguments_, options = {}) {
+  return run(
+    process.platform === "win32" ? `${command}.cmd` : command,
+    arguments_,
+    {
+      ...options,
+      shell: process.platform === "win32",
+    },
+  );
+}
+
+function runPnpm(arguments_, options = {}) {
+  return runCli("pnpm", arguments_, options);
+}
+
 function runNpm(arguments_, options = {}) {
-  const npmExecPath = process.env.npm_execpath;
-  return npmExecPath === undefined
-    ? run(process.platform === "win32" ? "npm.cmd" : "npm", arguments_, {
-        ...options,
-        shell: process.platform === "win32",
-      })
-    : run(process.execPath, [npmExecPath, ...arguments_], options);
+  return runCli("npm", arguments_, options);
 }
 
 function gitCommand() {
@@ -146,19 +155,50 @@ export function validateReleaseTag(options = {}) {
   return { headCommit, releaseTag };
 }
 
+function lockfileImporterBlock(lockfile, importer) {
+  const heading = `  ${importer}:`;
+  const lines = lockfile.split("\n");
+  const start = lines.findIndex((line) => line === heading);
+  if (start === -1) return null;
+  const block = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^  \S/u.test(line) || /^[^\s]/u.test(line)) break;
+    block.push(line);
+  }
+  return block.join("\n");
+}
+
+async function assertPnpmLockfileSynchronized(root, manifest) {
+  const lockfile = await readFile(join(root, "pnpm-lock.yaml"), "utf8");
+  if (!/^lockfileVersion:/u.test(lockfile)) {
+    fail("pnpm-lock.yaml is missing lockfileVersion");
+  }
+  const block = lockfileImporterBlock(
+    lockfile,
+    `packages/${PACKAGE.directory}`,
+  );
+  if (block === null) {
+    fail(`${PACKAGE.name} is not synchronized with pnpm-lock.yaml`);
+  }
+  for (const [name, version] of Object.entries(manifest.dependencies ?? {})) {
+    const nameLine = name.startsWith("@") ? `'${name}':` : `${name}:`;
+    if (!block.includes(nameLine) || !block.includes(`specifier: ${version}`)) {
+      fail(`${PACKAGE.name} is not synchronized with pnpm-lock.yaml`);
+    }
+  }
+}
+
 export async function validateRepository(options = {}) {
   const root = resolve(options.root ?? defaultRoot());
   const rootManifest = await readJson(join(root, "package.json"));
   const packageDirectory = join(root, "packages", PACKAGE.directory);
   const manifest = await readJson(join(packageDirectory, "package.json"));
-  const lockfile = await readJson(join(root, "package-lock.json"));
-  const lockEntry = lockfile.packages?.[`packages/${PACKAGE.directory}`];
 
   if (
     rootManifest.private !== true ||
-    rootManifest.packageManager !== `npm@${REVIEWED_NPM_VERSION}`
+    rootManifest.packageManager !== `pnpm@${REVIEWED_PNPM_VERSION}`
   ) {
-    fail(`the private root must pin npm@${REVIEWED_NPM_VERSION}`);
+    fail(`the private root must pin pnpm@${REVIEWED_PNPM_VERSION}`);
   }
   if (
     manifest.name !== PACKAGE.name ||
@@ -197,9 +237,7 @@ export async function validateRepository(options = {}) {
   }
   await stat(join(packageDirectory, "README.md"));
   await stat(join(packageDirectory, "LICENSE"));
-  if (lockEntry?.version !== manifest.version) {
-    fail(`${PACKAGE.name} version is not synchronized with package-lock.json`);
-  }
+  await assertPnpmLockfileSynchronized(root, manifest);
 
   const publicWorkspaces = [];
   for (const entry of await readdir(join(root, "packages"), {
@@ -331,7 +369,7 @@ export async function prepareRelease(options = {}) {
     fail(`release output directory must be empty: ${output}`);
   }
 
-  runNpm(["run", "build"], { cwd: root });
+  runPnpm(["run", "build"], { cwd: root });
   const result = runNpm(
     ["pack", packageDirectory, "--json", "--pack-destination", output],
     { cwd: root, capture: true },

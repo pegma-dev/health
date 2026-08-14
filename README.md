@@ -55,10 +55,10 @@ const { status, body } = toHealthResponse(result);
 Requires Node.js 22+.
 
 ```sh
-npm ci
-npm run format:check
-npm run check
-npm test
+pnpm install --frozen-lockfile
+pnpm run format:check
+pnpm run check
+pnpm test
 ```
 
 Maintainers should follow [the release runbook](docs/RELEASING.md). Releases

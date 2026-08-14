@@ -56,7 +56,7 @@ running the build. Each package `tsconfig.json` must exclude
 ## Workflow
 
 Work on a `claude/*` branch and open a pull request. The gate is
-`npm run format:check`, `npm run check`, `npm test` — all three, on Node 22
+`pnpm run format:check`, `pnpm run check`, `pnpm test` — all three, on Node 22
 and 24. Store tests run against `createMemoryStore()` from
 `@pegma/storage-core`.
 
