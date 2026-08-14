@@ -33,6 +33,15 @@ export interface ValidationResult {
 
 export const RELEASE_PACKAGES: readonly ReleasePackageDefinition[];
 
+export interface PnpmImporterDependency {
+  readonly specifier: string | null;
+  readonly version: string | null;
+}
+
+export function parsePnpmImporterDependencies(
+  block: string,
+): Map<string, PnpmImporterDependency>;
+
 export function parseArguments(
   arguments_: readonly string[],
 ): ReleaseCommandOptions;
