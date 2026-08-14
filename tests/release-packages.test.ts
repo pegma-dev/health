@@ -100,17 +100,17 @@ describe("release package metadata", () => {
       version: "0.1.1",
     });
 
-    const peers = parsePnpmImporterDependencies(
+    const optional = parsePnpmImporterDependencies(
       `
-    peerDependencies:
+    optionalDependencies:
       '@pegma/spine':
-        specifier: ^0.1.0
+        specifier: 0.1.1
         version: 0.1.1
 `,
-      "peerDependencies",
+      "optionalDependencies",
     );
-    expect(peers.get("@pegma/spine")).toEqual({
-      specifier: "^0.1.0",
+    expect(optional.get("@pegma/spine")).toEqual({
+      specifier: "0.1.1",
       version: "0.1.1",
     });
   });
@@ -123,12 +123,24 @@ describe("release package metadata", () => {
       lockfileResolvedVersionMatches("1.2.3(@types/node@26.1.2)", "^1.2.0"),
     ).toBe(true);
     expect(lockfileResolvedVersionMatches("2.0.0", "^1.2.0")).toBe(false);
+    expect(lockfileResolvedVersionMatches("0.2.9", "^0.2.3")).toBe(true);
+    expect(lockfileResolvedVersionMatches("0.3.0", "^0.2.3")).toBe(false);
+    expect(lockfileResolvedVersionMatches("0.0.3", "^0.0.3")).toBe(true);
+    expect(lockfileResolvedVersionMatches("0.0.4", "^0.0.3")).toBe(false);
     expect(lockfileResolvedVersionMatches("0.1.1", "0.1.1")).toBe(true);
     expect(
       lockfileResolvedVersionMatches("0.1.1(@pegma/spine@0.1.1)", "0.1.1"),
     ).toBe(true);
     expect(lockfileResolvedVersionMatches("0.1.2", "0.1.1")).toBe(false);
     expect(lockfileResolvedVersionMatches("999.0.0", "0.1.1")).toBe(false);
+    expect(lockfileResolvedVersionMatches("1.2.3-rc.1", "1.2.3")).toBe(false);
+    expect(lockfileResolvedVersionMatches("1.2.3-rc.1", "1.2.3-rc.1")).toBe(
+      true,
+    );
+    expect(
+      lockfileResolvedVersionMatches("1.2.3-rc.1(@foo@1.0.0)", "1.2.3-rc.1"),
+    ).toBe(true);
+    expect(lockfileResolvedVersionMatches("1.2.3", "1.2.3-rc.1")).toBe(false);
   });
 
   it("requires the release tag to match a public package version", async () => {

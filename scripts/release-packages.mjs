@@ -20,7 +20,7 @@ const PACKAGE = {
 const REPOSITORY_URL = "git+https://github.com/pegma-dev/health.git";
 const REVIEWED_PNPM_VERSION = "10.34.5";
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
-const LOCKFILE_PIN_SECTIONS = ["dependencies", "peerDependencies"];
+const LOCKFILE_PIN_SECTIONS = ["dependencies", "optionalDependencies"];
 
 export const RELEASE_PACKAGES = [PACKAGE];
 
@@ -236,13 +236,19 @@ function caretUpperBound(triple) {
   return [0, 0, patch + 1];
 }
 
+function lockfileResolvedIdentity(resolved) {
+  const peer = /^(.+)\([^)]*\)$/u.exec(resolved);
+  return peer === null ? resolved : peer[1];
+}
+
 export function lockfileResolvedVersionMatches(resolved, specifier) {
-  const resolvedBase = resolved.split("(")[0];
-  if (resolvedBase === specifier) return true;
-  if (STABLE_SEMVER.test(specifier)) return false;
-  const resolvedTriple = parseSemverTriple(resolvedBase);
-  if (resolvedTriple === null) return false;
+  const resolvedId = lockfileResolvedIdentity(resolved);
+  if (resolvedId === specifier) return true;
   const caret = /^\^(.+)$/u.exec(specifier);
+  const tilde = /^~(.+)$/u.exec(specifier);
+  if (caret === null && tilde === null) return false;
+  const resolvedTriple = parseSemverTriple(resolvedId);
+  if (resolvedTriple === null) return false;
   if (caret !== null) {
     const floor = parseSemverTriple(caret[1]);
     if (floor === null) return false;
@@ -251,16 +257,12 @@ export function lockfileResolvedVersionMatches(resolved, specifier) {
       compareSemver(resolvedTriple, caretUpperBound(floor)) < 0
     );
   }
-  const tilde = /^~(.+)$/u.exec(specifier);
-  if (tilde !== null) {
-    const floor = parseSemverTriple(tilde[1]);
-    if (floor === null) return false;
-    return (
-      compareSemver(resolvedTriple, floor) >= 0 &&
-      compareSemver(resolvedTriple, [floor[0], floor[1] + 1, 0]) < 0
-    );
-  }
-  return false;
+  const floor = parseSemverTriple(tilde[1]);
+  if (floor === null) return false;
+  return (
+    compareSemver(resolvedTriple, floor) >= 0 &&
+    compareSemver(resolvedTriple, [floor[0], floor[1] + 1, 0]) < 0
+  );
 }
 
 async function assertPnpmLockfileSynchronized(root, manifest) {

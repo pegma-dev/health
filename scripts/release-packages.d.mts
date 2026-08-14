@@ -42,7 +42,7 @@ export function decodeYamlScalar(raw: string): string;
 
 export function parsePnpmImporterDependencies(
   block: string,
-  section?: "dependencies" | "peerDependencies",
+  section?: "dependencies" | "optionalDependencies" | "devDependencies",
 ): Map<string, PnpmImporterDependency>;
 
 export function lockfileResolvedVersionMatches(
