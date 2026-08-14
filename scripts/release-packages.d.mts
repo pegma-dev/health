@@ -38,9 +38,17 @@ export interface PnpmImporterDependency {
   readonly version: string | null;
 }
 
+export function decodeYamlScalar(raw: string): string;
+
 export function parsePnpmImporterDependencies(
   block: string,
+  section?: "dependencies" | "peerDependencies",
 ): Map<string, PnpmImporterDependency>;
+
+export function lockfileResolvedVersionMatches(
+  resolved: string,
+  specifier: string,
+): boolean;
 
 export function parseArguments(
   arguments_: readonly string[],

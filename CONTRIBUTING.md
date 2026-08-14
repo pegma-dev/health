@@ -13,7 +13,7 @@ Thank you for helping improve Health.
 
 ## Local development
 
-Health requires Node.js 22 or newer.
+Health requires Node.js 22 or 24.
 
 ```sh
 corepack enable

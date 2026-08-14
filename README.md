@@ -52,7 +52,7 @@ const { status, body } = toHealthResponse(result);
 
 ## Development
 
-Requires Node.js 22+.
+Requires Node.js 22 or 24.
 
 ```sh
 corepack enable

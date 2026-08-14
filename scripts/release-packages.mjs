@@ -20,6 +20,7 @@ const PACKAGE = {
 const REPOSITORY_URL = "git+https://github.com/pegma-dev/health.git";
 const REVIEWED_PNPM_VERSION = "10.34.5";
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
+const LOCKFILE_PIN_SECTIONS = ["dependencies", "peerDependencies"];
 
 export const RELEASE_PACKAGES = [PACKAGE];
 
@@ -170,43 +171,96 @@ function lockfileImporterBlock(lockfile, importer) {
   return block.join("\n");
 }
 
-export function parsePnpmImporterDependencies(block) {
+export function decodeYamlScalar(raw) {
+  if (raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")) {
+    return raw.slice(1, -1).replaceAll("''", "'");
+  }
+  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw.slice(1, -1);
+    }
+  }
+  return raw;
+}
+
+export function parsePnpmImporterDependencies(block, section = "dependencies") {
   const dependencies = new Map();
   let current = null;
-  let inDependencies = false;
+  let inSection = false;
   for (const line of block.split("\n")) {
-    if (line === "    dependencies:") {
-      inDependencies = true;
+    if (line === `    ${section}:`) {
+      inSection = true;
       current = null;
       continue;
     }
-    if (inDependencies && /^    \S/u.test(line)) {
+    if (inSection && /^    \S/u.test(line)) {
       break;
     }
-    if (!inDependencies) continue;
-    const name = /^      ('[^']+'|[^:]+):$/u.exec(line);
+    if (!inSection) continue;
+    const name = /^      (.+):$/u.exec(line);
     if (name !== null) {
-      const raw = name[1];
-      current = raw.startsWith("'") ? raw.slice(1, -1) : raw;
+      current = decodeYamlScalar(name[1]);
       dependencies.set(current, { specifier: null, version: null });
       continue;
     }
     if (current === null) continue;
     const specifier = /^        specifier: (.+)$/u.exec(line);
     if (specifier !== null) {
-      dependencies.get(current).specifier = specifier[1];
+      dependencies.get(current).specifier = decodeYamlScalar(specifier[1]);
       continue;
     }
     const version = /^        version: (.+)$/u.exec(line);
     if (version !== null) {
-      dependencies.get(current).version = version[1];
+      dependencies.get(current).version = decodeYamlScalar(version[1]);
     }
   }
   return dependencies;
 }
 
-function resolvedVersionMatches(resolved, pinned) {
-  return resolved === pinned || resolved.startsWith(`${pinned}(`);
+function parseSemverTriple(version) {
+  const match = STABLE_SEMVER.exec(version);
+  if (match === null) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function compareSemver(left, right) {
+  return left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
+}
+
+function caretUpperBound(triple) {
+  const [major, minor, patch] = triple;
+  if (major > 0) return [major + 1, 0, 0];
+  if (minor > 0) return [0, minor + 1, 0];
+  return [0, 0, patch + 1];
+}
+
+export function lockfileResolvedVersionMatches(resolved, specifier) {
+  const resolvedBase = resolved.split("(")[0];
+  if (resolvedBase === specifier) return true;
+  if (STABLE_SEMVER.test(specifier)) return false;
+  const resolvedTriple = parseSemverTriple(resolvedBase);
+  if (resolvedTriple === null) return false;
+  const caret = /^\^(.+)$/u.exec(specifier);
+  if (caret !== null) {
+    const floor = parseSemverTriple(caret[1]);
+    if (floor === null) return false;
+    return (
+      compareSemver(resolvedTriple, floor) >= 0 &&
+      compareSemver(resolvedTriple, caretUpperBound(floor)) < 0
+    );
+  }
+  const tilde = /^~(.+)$/u.exec(specifier);
+  if (tilde !== null) {
+    const floor = parseSemverTriple(tilde[1]);
+    if (floor === null) return false;
+    return (
+      compareSemver(resolvedTriple, floor) >= 0 &&
+      compareSemver(resolvedTriple, [floor[0], floor[1] + 1, 0]) < 0
+    );
+  }
+  return false;
 }
 
 async function assertPnpmLockfileSynchronized(root, manifest) {
@@ -221,14 +275,16 @@ async function assertPnpmLockfileSynchronized(root, manifest) {
   if (block === null) {
     fail(`${PACKAGE.name} is not synchronized with pnpm-lock.yaml`);
   }
-  const locked = parsePnpmImporterDependencies(block);
-  for (const [name, pinned] of Object.entries(manifest.dependencies ?? {})) {
-    const entry = locked.get(name);
-    if (
-      entry?.specifier !== pinned ||
-      !resolvedVersionMatches(entry.version ?? "", pinned)
-    ) {
-      fail(`${PACKAGE.name} is not synchronized with pnpm-lock.yaml`);
+  for (const section of LOCKFILE_PIN_SECTIONS) {
+    const locked = parsePnpmImporterDependencies(block, section);
+    for (const [name, pinned] of Object.entries(manifest[section] ?? {})) {
+      const entry = locked.get(name);
+      if (
+        entry?.specifier !== pinned ||
+        !lockfileResolvedVersionMatches(entry.version ?? "", pinned)
+      ) {
+        fail(`${PACKAGE.name} is not synchronized with pnpm-lock.yaml`);
+      }
     }
   }
 }

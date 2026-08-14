@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 import {
   RELEASE_PACKAGES,
   decidePublication,
+  decodeYamlScalar,
+  lockfileResolvedVersionMatches,
   parseArguments,
   parsePnpmImporterDependencies,
   validateReleaseTag,
@@ -86,6 +88,47 @@ describe("release package metadata", () => {
       specifier: "0.1.1",
       version: "999.0.0",
     });
+
+    const quoted = parsePnpmImporterDependencies(`
+    dependencies:
+      "@pegma/spine":
+        specifier: "0.1.1"
+        version: "0.1.1"
+`);
+    expect(quoted.get("@pegma/spine")).toEqual({
+      specifier: "0.1.1",
+      version: "0.1.1",
+    });
+
+    const peers = parsePnpmImporterDependencies(
+      `
+    peerDependencies:
+      '@pegma/spine':
+        specifier: ^0.1.0
+        version: 0.1.1
+`,
+      "peerDependencies",
+    );
+    expect(peers.get("@pegma/spine")).toEqual({
+      specifier: "^0.1.0",
+      version: "0.1.1",
+    });
+  });
+
+  it("accepts resolved versions that satisfy a range and keeps exact pins exact", () => {
+    expect(decodeYamlScalar("'0.1.1'")).toBe("0.1.1");
+    expect(decodeYamlScalar('"0.1.1"')).toBe("0.1.1");
+    expect(lockfileResolvedVersionMatches("1.2.3", "^1.2.0")).toBe(true);
+    expect(
+      lockfileResolvedVersionMatches("1.2.3(@types/node@26.1.2)", "^1.2.0"),
+    ).toBe(true);
+    expect(lockfileResolvedVersionMatches("2.0.0", "^1.2.0")).toBe(false);
+    expect(lockfileResolvedVersionMatches("0.1.1", "0.1.1")).toBe(true);
+    expect(
+      lockfileResolvedVersionMatches("0.1.1(@pegma/spine@0.1.1)", "0.1.1"),
+    ).toBe(true);
+    expect(lockfileResolvedVersionMatches("0.1.2", "0.1.1")).toBe(false);
+    expect(lockfileResolvedVersionMatches("999.0.0", "0.1.1")).toBe(false);
   });
 
   it("requires the release tag to match a public package version", async () => {
