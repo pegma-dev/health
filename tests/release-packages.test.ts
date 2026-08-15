@@ -141,6 +141,18 @@ describe("release package metadata", () => {
       lockfileResolvedVersionMatches("1.2.3-rc.1(@foo@1.0.0)", "1.2.3-rc.1"),
     ).toBe(true);
     expect(lockfileResolvedVersionMatches("1.2.3", "1.2.3-rc.1")).toBe(false);
+    expect(
+      lockfileResolvedVersionMatches(
+        "4.1.10(@types/node@26.1.2)(vite@8.1.5(@types/node@26.1.2))",
+        "4.1.10",
+      ),
+    ).toBe(true);
+    expect(
+      lockfileResolvedVersionMatches(
+        "4.1.10(@types/node@26.1.2)(vite@8.1.5(@types/node@26.1.2))",
+        "^4.1.10",
+      ),
+    ).toBe(true);
   });
 
   it("requires the release tag to match a public package version", async () => {

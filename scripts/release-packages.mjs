@@ -237,8 +237,8 @@ function caretUpperBound(triple) {
 }
 
 function lockfileResolvedIdentity(resolved) {
-  const peer = /^(.+)\([^)]*\)$/u.exec(resolved);
-  return peer === null ? resolved : peer[1];
+  const suffix = resolved.indexOf("(");
+  return suffix === -1 ? resolved : resolved.slice(0, suffix);
 }
 
 export function lockfileResolvedVersionMatches(resolved, specifier) {
