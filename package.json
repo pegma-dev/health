@@ -5,13 +5,10 @@
   "description": "Composable health probes and HTTP responses for Pegma hosts.",
   "license": "MIT",
   "type": "module",
-  "packageManager": "npm@11.18.0",
+  "packageManager": "pnpm@10.34.5",
   "engines": {
     "node": ">=22"
   },
-  "workspaces": [
-    "packages/*"
-  ],
   "scripts": {
     "build": "tsc -b",
     "check": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false",
@@ -21,7 +18,7 @@
     "release:check": "node scripts/release-packages.mjs check",
     "release:pack": "node scripts/release-packages.mjs pack",
     "release:publish": "node scripts/release-packages.mjs publish",
-    "test": "npm run build && vitest run"
+    "test": "pnpm run build && vitest run"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

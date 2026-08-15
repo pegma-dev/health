@@ -18,8 +18,9 @@ const PACKAGE = {
   name: "@pegma/health",
 };
 const REPOSITORY_URL = "git+https://github.com/pegma-dev/health.git";
-const REVIEWED_NPM_VERSION = "11.18.0";
+const REVIEWED_PNPM_VERSION = "10.34.5";
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
+const LOCKFILE_PIN_SECTIONS = ["dependencies", "optionalDependencies"];
 
 export const RELEASE_PACKAGES = [PACKAGE];
 
@@ -58,14 +59,25 @@ function run(command, arguments_, options = {}) {
   return result;
 }
 
+function runPnpm(arguments_, options = {}) {
+  return run(process.platform === "win32" ? "pnpm.cmd" : "pnpm", arguments_, {
+    ...options,
+    shell: process.platform === "win32",
+  });
+}
+
+function npmEnvironment(env) {
+  const next = { ...env };
+  delete next.npm_execpath;
+  return next;
+}
+
 function runNpm(arguments_, options = {}) {
-  const npmExecPath = process.env.npm_execpath;
-  return npmExecPath === undefined
-    ? run(process.platform === "win32" ? "npm.cmd" : "npm", arguments_, {
-        ...options,
-        shell: process.platform === "win32",
-      })
-    : run(process.execPath, [npmExecPath, ...arguments_], options);
+  return run(process.platform === "win32" ? "npm.cmd" : "npm", arguments_, {
+    ...options,
+    env: npmEnvironment(options.env ?? process.env),
+    shell: process.platform === "win32",
+  });
 }
 
 function gitCommand() {
@@ -146,19 +158,150 @@ export function validateReleaseTag(options = {}) {
   return { headCommit, releaseTag };
 }
 
+function lockfileImporterBlock(lockfile, importer) {
+  const heading = `  ${importer}:`;
+  const lines = lockfile.split("\n");
+  const start = lines.findIndex((line) => line === heading);
+  if (start === -1) return null;
+  const block = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^  \S/u.test(line) || /^[^\s]/u.test(line)) break;
+    block.push(line);
+  }
+  return block.join("\n");
+}
+
+export function decodeYamlScalar(raw) {
+  if (raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")) {
+    return raw.slice(1, -1).replaceAll("''", "'");
+  }
+  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw.slice(1, -1);
+    }
+  }
+  return raw;
+}
+
+export function parsePnpmImporterDependencies(block, section = "dependencies") {
+  const dependencies = new Map();
+  let current = null;
+  let inSection = false;
+  for (const line of block.split("\n")) {
+    if (line === `    ${section}:`) {
+      inSection = true;
+      current = null;
+      continue;
+    }
+    if (inSection && /^    \S/u.test(line)) {
+      break;
+    }
+    if (!inSection) continue;
+    const name = /^      (.+):$/u.exec(line);
+    if (name !== null) {
+      current = decodeYamlScalar(name[1]);
+      dependencies.set(current, { specifier: null, version: null });
+      continue;
+    }
+    if (current === null) continue;
+    const specifier = /^        specifier: (.+)$/u.exec(line);
+    if (specifier !== null) {
+      dependencies.get(current).specifier = decodeYamlScalar(specifier[1]);
+      continue;
+    }
+    const version = /^        version: (.+)$/u.exec(line);
+    if (version !== null) {
+      dependencies.get(current).version = decodeYamlScalar(version[1]);
+    }
+  }
+  return dependencies;
+}
+
+function parseSemverTriple(version) {
+  const match = STABLE_SEMVER.exec(version);
+  if (match === null) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function compareSemver(left, right) {
+  return left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
+}
+
+function caretUpperBound(triple) {
+  const [major, minor, patch] = triple;
+  if (major > 0) return [major + 1, 0, 0];
+  if (minor > 0) return [0, minor + 1, 0];
+  return [0, 0, patch + 1];
+}
+
+function lockfileResolvedIdentity(resolved) {
+  const suffix = resolved.indexOf("(");
+  return suffix === -1 ? resolved : resolved.slice(0, suffix);
+}
+
+export function lockfileResolvedVersionMatches(resolved, specifier) {
+  const resolvedId = lockfileResolvedIdentity(resolved);
+  if (resolvedId === specifier) return true;
+  const caret = /^\^(.+)$/u.exec(specifier);
+  const tilde = /^~(.+)$/u.exec(specifier);
+  if (caret === null && tilde === null) return false;
+  const resolvedTriple = parseSemverTriple(resolvedId);
+  if (resolvedTriple === null) return false;
+  if (caret !== null) {
+    const floor = parseSemverTriple(caret[1]);
+    if (floor === null) return false;
+    return (
+      compareSemver(resolvedTriple, floor) >= 0 &&
+      compareSemver(resolvedTriple, caretUpperBound(floor)) < 0
+    );
+  }
+  const floor = parseSemverTriple(tilde[1]);
+  if (floor === null) return false;
+  return (
+    compareSemver(resolvedTriple, floor) >= 0 &&
+    compareSemver(resolvedTriple, [floor[0], floor[1] + 1, 0]) < 0
+  );
+}
+
+async function assertPnpmLockfileSynchronized(root, manifest) {
+  const lockfile = await readFile(join(root, "pnpm-lock.yaml"), "utf8");
+  if (!/^lockfileVersion:/u.test(lockfile)) {
+    fail("pnpm-lock.yaml is missing lockfileVersion");
+  }
+  const block = lockfileImporterBlock(
+    lockfile,
+    `packages/${PACKAGE.directory}`,
+  );
+  if (block === null) {
+    fail(`${PACKAGE.name} is not synchronized with pnpm-lock.yaml`);
+  }
+  for (const section of LOCKFILE_PIN_SECTIONS) {
+    const locked = parsePnpmImporterDependencies(block, section);
+    for (const [name, pinned] of Object.entries(manifest[section] ?? {})) {
+      const entry = locked.get(name);
+      if (
+        entry?.specifier !== pinned ||
+        !lockfileResolvedVersionMatches(entry.version ?? "", pinned)
+      ) {
+        fail(`${PACKAGE.name} is not synchronized with pnpm-lock.yaml`);
+      }
+    }
+  }
+}
+
 export async function validateRepository(options = {}) {
   const root = resolve(options.root ?? defaultRoot());
   const rootManifest = await readJson(join(root, "package.json"));
   const packageDirectory = join(root, "packages", PACKAGE.directory);
   const manifest = await readJson(join(packageDirectory, "package.json"));
-  const lockfile = await readJson(join(root, "package-lock.json"));
-  const lockEntry = lockfile.packages?.[`packages/${PACKAGE.directory}`];
 
   if (
     rootManifest.private !== true ||
-    rootManifest.packageManager !== `npm@${REVIEWED_NPM_VERSION}`
+    rootManifest.packageManager !== `pnpm@${REVIEWED_PNPM_VERSION}`
   ) {
-    fail(`the private root must pin npm@${REVIEWED_NPM_VERSION}`);
+    fail(`the private root must pin pnpm@${REVIEWED_PNPM_VERSION}`);
   }
   if (
     manifest.name !== PACKAGE.name ||
@@ -197,9 +340,7 @@ export async function validateRepository(options = {}) {
   }
   await stat(join(packageDirectory, "README.md"));
   await stat(join(packageDirectory, "LICENSE"));
-  if (lockEntry?.version !== manifest.version) {
-    fail(`${PACKAGE.name} version is not synchronized with package-lock.json`);
-  }
+  await assertPnpmLockfileSynchronized(root, manifest);
 
   const publicWorkspaces = [];
   for (const entry of await readdir(join(root, "packages"), {
@@ -331,7 +472,7 @@ export async function prepareRelease(options = {}) {
     fail(`release output directory must be empty: ${output}`);
   }
 
-  runNpm(["run", "build"], { cwd: root });
+  runPnpm(["run", "build"], { cwd: root });
   const result = runNpm(
     ["pack", packageDirectory, "--json", "--pack-destination", output],
     { cwd: root, capture: true },

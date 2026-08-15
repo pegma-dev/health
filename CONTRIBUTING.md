@@ -13,13 +13,14 @@ Thank you for helping improve Health.
 
 ## Local development
 
-Health requires Node.js 22 or newer.
+Health requires Node.js 22 or 24.
 
 ```sh
-npm ci
-npm run check
-npm test
-npm run format:check
+corepack enable
+pnpm install --frozen-lockfile
+pnpm run check
+pnpm test
+pnpm run format:check
 ```
 
 ## Pull requests

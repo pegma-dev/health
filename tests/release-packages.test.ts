@@ -6,7 +6,10 @@ import { describe, expect, it } from "vitest";
 import {
   RELEASE_PACKAGES,
   decidePublication,
+  decodeYamlScalar,
+  lockfileResolvedVersionMatches,
   parseArguments,
+  parsePnpmImporterDependencies,
   validateReleaseTag,
   validateRepository,
 } from "../scripts/release-packages.mjs";
@@ -42,6 +45,114 @@ describe("release package metadata", () => {
 
   it("validates package manifests and the lockfile together", async () => {
     await expect(validateRepository()).resolves.toBeDefined();
+  });
+
+  it("matches each lockfile dependency to its own specifier and resolved version", () => {
+    const locked = parsePnpmImporterDependencies(`
+    dependencies:
+      '@pegma/spine':
+        specifier: 0.1.1
+        version: 0.1.1
+      '@pegma/storage-core':
+        specifier: 0.4.0
+        version: 0.4.0
+`);
+    expect(locked.get("@pegma/spine")).toEqual({
+      specifier: "0.1.1",
+      version: "0.1.1",
+    });
+    expect(locked.get("@pegma/storage-core")).toEqual({
+      specifier: "0.4.0",
+      version: "0.4.0",
+    });
+
+    const swapped = parsePnpmImporterDependencies(`
+    dependencies:
+      '@pegma/spine':
+        specifier: 0.4.0
+        version: 0.4.0
+      '@pegma/storage-core':
+        specifier: 0.1.1
+        version: 0.1.1
+`);
+    expect(swapped.get("@pegma/spine")?.specifier).not.toBe("0.1.1");
+    expect(swapped.get("@pegma/spine")?.version).not.toBe("0.1.1");
+
+    const staleResolved = parsePnpmImporterDependencies(`
+    dependencies:
+      '@pegma/spine':
+        specifier: 0.1.1
+        version: 999.0.0
+`);
+    expect(staleResolved.get("@pegma/spine")).toEqual({
+      specifier: "0.1.1",
+      version: "999.0.0",
+    });
+
+    const quoted = parsePnpmImporterDependencies(`
+    dependencies:
+      "@pegma/spine":
+        specifier: "0.1.1"
+        version: "0.1.1"
+`);
+    expect(quoted.get("@pegma/spine")).toEqual({
+      specifier: "0.1.1",
+      version: "0.1.1",
+    });
+
+    const optional = parsePnpmImporterDependencies(
+      `
+    optionalDependencies:
+      '@pegma/spine':
+        specifier: 0.1.1
+        version: 0.1.1
+`,
+      "optionalDependencies",
+    );
+    expect(optional.get("@pegma/spine")).toEqual({
+      specifier: "0.1.1",
+      version: "0.1.1",
+    });
+  });
+
+  it("accepts resolved versions that satisfy a range and keeps exact pins exact", () => {
+    expect(decodeYamlScalar("'0.1.1'")).toBe("0.1.1");
+    expect(decodeYamlScalar('"0.1.1"')).toBe("0.1.1");
+    expect(lockfileResolvedVersionMatches("1.2.3", "^1.2.0")).toBe(true);
+    expect(
+      lockfileResolvedVersionMatches("1.2.3(@types/node@26.1.2)", "^1.2.0"),
+    ).toBe(true);
+    expect(lockfileResolvedVersionMatches("2.0.0", "^1.2.0")).toBe(false);
+    expect(lockfileResolvedVersionMatches("0.2.9", "^0.2.3")).toBe(true);
+    expect(lockfileResolvedVersionMatches("0.3.0", "^0.2.3")).toBe(false);
+    expect(lockfileResolvedVersionMatches("0.0.3", "^0.0.3")).toBe(true);
+    expect(lockfileResolvedVersionMatches("0.0.4", "^0.0.3")).toBe(false);
+    expect(lockfileResolvedVersionMatches("0.1.1", "0.1.1")).toBe(true);
+    expect(
+      lockfileResolvedVersionMatches("0.1.1(@pegma/spine@0.1.1)", "0.1.1"),
+    ).toBe(true);
+    expect(lockfileResolvedVersionMatches("0.1.2", "0.1.1")).toBe(false);
+    expect(lockfileResolvedVersionMatches("999.0.0", "0.1.1")).toBe(false);
+    expect(lockfileResolvedVersionMatches("1.2.3-rc.1", "1.2.3")).toBe(false);
+    expect(lockfileResolvedVersionMatches("1.2.3-rc.1", "1.2.3-rc.1")).toBe(
+      true,
+    );
+    expect(
+      lockfileResolvedVersionMatches("1.2.3-rc.1(@foo@1.0.0)", "1.2.3-rc.1"),
+    ).toBe(true);
+    expect(lockfileResolvedVersionMatches("1.2.3", "1.2.3-rc.1")).toBe(false);
+    expect(
+      lockfileResolvedVersionMatches(
+        "4.1.10(@types/node@26.1.2)(vite@8.1.5(@types/node@26.1.2))",
+        "4.1.10",
+      ),
+    ).toBe(true);
+    expect(
+      lockfileResolvedVersionMatches(
+        "4.1.10(@types/node@26.1.2)(vite@8.1.5(@types/node@26.1.2))",
+        "^4.1.10",
+      ),
+    ).toBe(true);
   });
 
   it("requires the release tag to match a public package version", async () => {
@@ -153,10 +264,16 @@ describe("release source authentication", () => {
     const prepare = jobs.slice(prepareStart, publishStart);
     const publish = jobs.slice(publishStart);
     expect(prepare).not.toContain("id-token: write");
+    expect(prepare).toContain("npm install --global npm@11.18.0");
+    expect(prepare).toContain("node scripts/release-packages.mjs pack");
     expect(publish).toContain("id-token: write");
     expect(publish).not.toContain("npm ci");
     expect(publish).not.toContain("npm install");
-    expect(publish).toContain("npm run release:publish");
+    expect(publish).not.toContain("pnpm install");
+    expect(publish).not.toContain("corepack");
+    expect(publish).not.toContain("pnpm run");
+    expect(publish).not.toContain("pnpm/action-setup");
+    expect(publish).toContain("node scripts/release-packages.mjs publish");
     expect(workflow).not.toContain("workflow_dispatch");
     expect(workflow).toContain("retention-days: 30");
   });

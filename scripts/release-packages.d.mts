@@ -33,6 +33,23 @@ export interface ValidationResult {
 
 export const RELEASE_PACKAGES: readonly ReleasePackageDefinition[];
 
+export interface PnpmImporterDependency {
+  readonly specifier: string | null;
+  readonly version: string | null;
+}
+
+export function decodeYamlScalar(raw: string): string;
+
+export function parsePnpmImporterDependencies(
+  block: string,
+  section?: "dependencies" | "optionalDependencies" | "devDependencies",
+): Map<string, PnpmImporterDependency>;
+
+export function lockfileResolvedVersionMatches(
+  resolved: string,
+  specifier: string,
+): boolean;
+
 export function parseArguments(
   arguments_: readonly string[],
 ): ReleaseCommandOptions;
