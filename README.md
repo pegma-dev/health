@@ -68,3 +68,5 @@ publish only from protected signed tags through npm trusted publishing.
 ## License
 
 MIT
+
+<!-- ruleset smoke test: verifies the org-required OpenRouter review runs here; this PR will be closed without merging -->
