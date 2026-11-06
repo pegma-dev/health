@@ -60,6 +60,7 @@ const DEFAULT_PARTITION = "__health__";
 const DEFAULT_PROBE_ID_PREFIX = "ping-";
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_LOGGED_ERROR_CHARS = 300;
+let fallbackProbeId = 0;
 
 /** Marks a probe that exceeded its own timeout rather than rejecting. */
 class ProbeTimeoutError extends Error {}
@@ -139,6 +140,16 @@ export interface StorePingCheckOptions {
   readonly clock?: Clock;
 }
 
+function createDefaultProbeId(): string {
+  const randomUUID = globalThis.crypto?.randomUUID;
+  if (typeof randomUUID === "function") {
+    return `${DEFAULT_PROBE_ID_PREFIX}${randomUUID.call(globalThis.crypto)}`;
+  }
+
+  fallbackProbeId += 1;
+  return `${DEFAULT_PROBE_ID_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${fallbackProbeId.toString(36)}`;
+}
+
 /**
  * Put-then-get round-trip against an injected Store. Proves the storage layer
  * accepts writes and returns them — not merely that a TCP port is open.
@@ -148,35 +159,69 @@ export function createStorePingCheck(
 ): HealthCheck {
   const name = options.name ?? "storage";
   const partition = options.partitionKey ?? DEFAULT_PARTITION;
-  const id =
-    options.id ?? `${DEFAULT_PROBE_ID_PREFIX}${globalThis.crypto.randomUUID()}`;
+  const id = options.id ?? createDefaultProbeId();
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const clock = options.clock ?? systemClock;
   const probes = options.store.collection(options.collection);
   let inFlight: Promise<CheckResult> | undefined;
-  let previousWriteSettled: Promise<void> = Promise.resolve();
+
+  async function writeProbe(
+    record: HealthProbeRecord,
+    deadline: number,
+  ): Promise<void> {
+    const key = { partition, id };
+    for (;;) {
+      const current = await withinDeadline(
+        () => probes.getVersioned(key),
+        deadline,
+      );
+      if (current === null) {
+        const result = await withinDeadline(
+          () => probes.insertIfAbsent(record),
+          deadline,
+        );
+        if (result.inserted) {
+          return;
+        }
+      } else {
+        const written = await withinDeadline(
+          () => probes.putIfUnchanged(record, current.version),
+          deadline,
+        );
+        if (written) {
+          return;
+        }
+      }
+    }
+  }
 
   async function runProbe(): Promise<CheckResult> {
     const started = Date.now();
+    const deadline = started + timeoutMs;
     try {
-      // A write may outlive its caller's timeout. Let it settle before another
-      // attempt uses the same row, while still bounding how long this call waits.
-      await withTimeout(previousWriteSettled, timeoutMs);
       const probedAt = clock.now();
       const record: HealthProbeRecord = { id, partition, probedAt };
-      const write = probes.put(record);
-      previousWriteSettled = write.then(
-        () => undefined,
-        () => undefined,
+      await writeProbe(record, deadline);
+      const got = await withinDeadline(
+        () => probes.getVersioned({ partition, id }),
+        deadline,
       );
-      await withTimeout(write, timeoutMs);
-      const got = await withTimeout(probes.get({ partition, id }), timeoutMs);
-      if (got === null || got.probedAt !== probedAt) {
+      if (got === null || got.value.probedAt !== probedAt) {
         return {
           status: "fail",
           latencyMs: Date.now() - started,
           detail: { reason: "round_trip_mismatch" },
         };
+      }
+
+      try {
+        await withinDeadline(
+          () => probes.deleteIfUnchanged({ partition, id }, got.version),
+          deadline,
+        );
+      } catch {
+        // Cleanup is best effort. The verified round trip remains valid, and a
+        // later conditional write can safely reuse this check instance's row.
       }
       return {
         status: "ok",
@@ -216,6 +261,17 @@ export function createStorePingCheck(
       return attempt;
     },
   };
+}
+
+function withinDeadline<T>(
+  operation: () => Promise<T>,
+  deadline: number,
+): Promise<T> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    return Promise.reject(new ProbeTimeoutError("probe deadline elapsed"));
+  }
+  return withTimeout(operation(), remainingMs);
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

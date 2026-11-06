@@ -40,10 +40,14 @@ logged through the injected `Logger` only, never placed in the public body. A
 check must settle, though: `runHealthChecks` imposes no deadline of its own, so
 bound your own I/O the way `createStorePingCheck` bounds its `timeoutMs`.
 
-`createStorePingCheck` writes and reads on every call, so a host serving it on a
-public route SHOULD rate limit or briefly cache that route — see
+`createStorePingCheck` performs a write-and-read round trip for each probe
+execution, so a host serving it on a public route SHOULD rate limit or briefly
+cache that route — see
 [`docs/MONITORING.md`](https://github.com/pegma-dev/health/blob/main/docs/MONITORING.md).
 Construct the check once at the composition root and reuse it for every health
-request. Its default record id is unique to that check instance, which keeps
-replicas from sharing a probe row; pass a stable, replica-specific `id` when a
-deployment needs to reuse the same row across process restarts.
+request. Concurrent callers share one execution and its `latencyMs`. The default
+record id is unique to that check instance, which keeps replicas from sharing a
+probe row, and a verified row is conditionally removed after the round trip.
+Pass an explicit `id` when the host needs a stable key; keep that id distinct
+among simultaneously running replicas. Earlier releases used `ping` as the
+default, so pass `id: "ping"` to retain that key intentionally.
