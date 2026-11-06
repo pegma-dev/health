@@ -1,6 +1,6 @@
-import { fixedClock, type Logger } from "@pegma/spine";
+import { fixedClock, type Clock, type Logger } from "@pegma/spine";
 import { createMemoryStore } from "@pegma/storage-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createDetailCheck,
@@ -11,6 +11,7 @@ import {
   toHealthResponse,
   type CheckResult,
   type HealthCheck,
+  type HealthProbeRecord,
 } from "./index.js";
 import type { Store } from "@pegma/storage-core";
 
@@ -23,6 +24,14 @@ const NOW = "2026-07-27T21:00:00.000Z";
  */
 const SECRET_SHAPED_MESSAGE =
   "AccountName=example;AccountKey=PLACEHOLDER_NOT_A_REAL_KEY";
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
 
 function failingCheck(
   name: string,
@@ -57,6 +66,20 @@ describe("createDetailCheck", () => {
 });
 
 describe("createStorePingCheck", () => {
+  it("constructs when Web Crypto is unavailable", async () => {
+    vi.stubGlobal("crypto", undefined);
+    try {
+      const check = createStorePingCheck({
+        store: createMemoryStore(),
+        collection: healthProbeCollection,
+        clock: fixedClock(NOW),
+      });
+      await expect(check.run()).resolves.toMatchObject({ status: "ok" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("round-trips a probe write through an injected store", async () => {
     const store = createMemoryStore();
     const check = createStorePingCheck({
@@ -70,22 +93,247 @@ describe("createStorePingCheck", () => {
 
     const stored = await store
       .collection(healthProbeCollection)
-      .get({ partition: "__health__", id: "ping" });
-    expect(stored).toEqual({
-      id: "ping",
+      .list("__health__");
+    expect(stored).toEqual([]);
+  });
+
+  it("honors an explicit probe id", async () => {
+    let stored: HealthProbeRecord | null = null;
+    let observed: HealthProbeRecord | null = null;
+    const store = {
+      collection() {
+        return {
+          async getVersioned() {
+            return stored === null ? null : { value: stored, version: "1" };
+          },
+          async insertIfAbsent(value: HealthProbeRecord) {
+            stored = value;
+            observed = value;
+            return { inserted: true, value };
+          },
+          async putIfUnchanged() {
+            return false;
+          },
+          async deleteIfUnchanged() {
+            stored = null;
+            return true;
+          },
+        };
+      },
+    } as unknown as Store;
+    const check = createStorePingCheck({
+      store,
+      collection: healthProbeCollection,
+      clock: fixedClock(NOW),
+      id: "replica-a",
+    });
+
+    await expect(check.run()).resolves.toMatchObject({ status: "ok" });
+    expect(observed).toEqual({
+      id: "replica-a",
       partition: "__health__",
       probedAt: NOW,
     });
+  });
+
+  it("coalesces concurrent calls on one check instance", async () => {
+    const writeStarted = deferred<void>();
+    let stored: HealthProbeRecord | null = null;
+    let writeCalls = 0;
+    let nowCalls = 0;
+    const clock: Clock = {
+      now() {
+        nowCalls += 1;
+        return nowCalls === 1 ? NOW : "2026-07-27T21:00:01.000Z";
+      },
+    };
+    const store = {
+      collection() {
+        return {
+          async getVersioned() {
+            return stored === null ? null : { value: stored, version: "1" };
+          },
+          async insertIfAbsent(value: HealthProbeRecord) {
+            writeCalls += 1;
+            await writeStarted.promise;
+            stored = value;
+            return { inserted: true, value };
+          },
+          async putIfUnchanged() {
+            return false;
+          },
+          async deleteIfUnchanged() {
+            stored = null;
+            return true;
+          },
+        };
+      },
+    } as unknown as Store;
+    const check = createStorePingCheck({
+      store,
+      collection: healthProbeCollection,
+      clock,
+    });
+
+    const first = check.run();
+    const second = check.run();
+    expect(second).toBe(first);
+    writeStarted.resolve();
+
+    await expect(Promise.all([first, second])).resolves.toMatchObject([
+      { status: "ok" },
+      { status: "ok" },
+    ]);
+    expect(writeCalls).toBe(1);
+    expect(nowCalls).toBe(1);
+  });
+
+  it("isolates separate check instances sharing one store", async () => {
+    const firstWrite = deferred<void>();
+    const records = new Map<
+      string,
+      { value: HealthProbeRecord; version: string }
+    >();
+    const observedIds = new Set<string>();
+    let writeCalls = 0;
+    const store = {
+      collection() {
+        return {
+          async getVersioned(key: { readonly id: string }) {
+            return records.get(key.id) ?? null;
+          },
+          async insertIfAbsent(value: HealthProbeRecord) {
+            writeCalls += 1;
+            observedIds.add(value.id);
+            records.set(value.id, { value, version: String(writeCalls) });
+            if (writeCalls === 1) {
+              await firstWrite.promise;
+            } else {
+              firstWrite.resolve();
+            }
+            return { inserted: true, value };
+          },
+          async putIfUnchanged() {
+            return false;
+          },
+          async deleteIfUnchanged(key: { readonly id: string }) {
+            return records.delete(key.id);
+          },
+        };
+      },
+    } as unknown as Store;
+    const first = createStorePingCheck({
+      store,
+      collection: healthProbeCollection,
+      clock: fixedClock(NOW),
+    });
+    const second = createStorePingCheck({
+      store,
+      collection: healthProbeCollection,
+      clock: fixedClock("2026-07-27T21:00:01.000Z"),
+    });
+
+    const results = await Promise.all([first.run(), second.run()]);
+
+    expect(results).toMatchObject([{ status: "ok" }, { status: "ok" }]);
+    expect(observedIds.size).toBe(2);
+    for (const id of observedIds) {
+      expect(id).toMatch(/^ping-/);
+    }
+  });
+
+  it("recovers while an earlier timed-out write is still pending", async () => {
+    vi.useFakeTimers();
+    const slowWrite = deferred<void>();
+    let stored: { value: HealthProbeRecord; version: string } | null = null;
+    let writeCalls = 0;
+    let version = 0;
+    let nowCalls = 0;
+    const clock: Clock = {
+      now() {
+        nowCalls += 1;
+        return nowCalls === 1
+          ? NOW
+          : nowCalls === 2
+            ? "2026-07-27T21:00:01.000Z"
+            : "2026-07-27T21:00:02.000Z";
+      },
+    };
+    const store = {
+      collection() {
+        return {
+          async getVersioned() {
+            return stored;
+          },
+          async insertIfAbsent(value: HealthProbeRecord) {
+            writeCalls += 1;
+            if (writeCalls === 1) {
+              await slowWrite.promise;
+            }
+            if (stored !== null) {
+              return { inserted: false, value: stored.value };
+            }
+            version += 1;
+            stored = { value, version: String(version) };
+            return { inserted: true, value };
+          },
+          async putIfUnchanged(value: HealthProbeRecord, expected: string) {
+            if (stored?.version !== expected) {
+              return false;
+            }
+            version += 1;
+            stored = { value, version: String(version) };
+            return true;
+          },
+          async deleteIfUnchanged(
+            _key: { readonly id: string },
+            expected: string,
+          ) {
+            if (stored?.version !== expected) {
+              return false;
+            }
+            stored = null;
+            return true;
+          },
+        };
+      },
+    } as unknown as Store;
+    const check = createStorePingCheck({
+      store,
+      collection: healthProbeCollection,
+      clock,
+      id: "replica-a",
+      timeoutMs: 5,
+    });
+
+    try {
+      const timedOut = check.run();
+      await vi.advanceTimersByTimeAsync(5);
+      await expect(timedOut).resolves.toMatchObject({
+        status: "fail",
+        detail: { reason: "store_ping_timeout" },
+      });
+
+      await expect(check.run()).resolves.toMatchObject({ status: "ok" });
+      expect(writeCalls).toBe(2);
+
+      slowWrite.resolve();
+      await Promise.resolve();
+      await expect(check.run()).resolves.toMatchObject({ status: "ok" });
+      expect(nowCalls).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("fails when the store rejects writes", async () => {
     const brokenStore = {
       collection() {
         return {
-          async get() {
+          async getVersioned() {
             return null;
           },
-          async put() {
+          async insertIfAbsent() {
             throw new Error("tables unavailable");
           },
         };
@@ -101,14 +349,53 @@ describe("createStorePingCheck", () => {
     expect(result.detail).toEqual({ reason: "store_ping_failed" });
   });
 
+  it("bounds repeated conditional write conflicts", async () => {
+    const existing: HealthProbeRecord = {
+      id: "replica-a",
+      partition: "__health__",
+      probedAt: NOW,
+    };
+    let reads = 0;
+    let writes = 0;
+    const store = {
+      collection() {
+        return {
+          async getVersioned() {
+            reads += 1;
+            return { value: existing, version: "unchanged" };
+          },
+          async putIfUnchanged() {
+            writes += 1;
+            return false;
+          },
+        };
+      },
+    } as unknown as Store;
+    const check = createStorePingCheck({
+      store,
+      collection: healthProbeCollection,
+      clock: fixedClock(NOW),
+      id: "replica-a",
+    });
+
+    const result = await check.run();
+
+    expect(result).toMatchObject({
+      status: "fail",
+      detail: { reason: "store_ping_failed" },
+    });
+    expect(reads).toBe(3);
+    expect(writes).toBe(3);
+  });
+
   it("never leaks the store error message into public detail", async () => {
     const brokenStore = {
       collection() {
         return {
-          async get() {
+          async getVersioned() {
             return null;
           },
-          async put() {
+          async insertIfAbsent() {
             throw new Error(SECRET_SHAPED_MESSAGE);
           },
         };
@@ -125,14 +412,15 @@ describe("createStorePingCheck", () => {
   });
 
   it("reports a timeout as its own enumerated reason", async () => {
+    vi.useFakeTimers();
     const hangingStore = {
       collection() {
         return {
-          async get() {
+          async getVersioned() {
             return null;
           },
-          put() {
-            return new Promise<void>(() => {
+          insertIfAbsent() {
+            return new Promise<never>(() => {
               // never settles
             });
           },
@@ -145,9 +433,60 @@ describe("createStorePingCheck", () => {
       clock: fixedClock(NOW),
       timeoutMs: 5,
     });
-    const result = await check.run();
-    expect(result.status).toBe("fail");
-    expect(result.detail).toEqual({ reason: "store_ping_timeout" });
+    try {
+      const pending = check.run();
+      await vi.advanceTimersByTimeAsync(5);
+      const result = await pending;
+      expect(result.status).toBe("fail");
+      expect(result.detail).toEqual({ reason: "store_ping_timeout" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses one timeout budget across storage operations", async () => {
+    vi.useFakeTimers();
+    let stored: HealthProbeRecord | null = null;
+    const store = {
+      collection() {
+        return {
+          getVersioned() {
+            return new Promise<null>((resolve) => {
+              setTimeout(() => resolve(null), 3);
+            });
+          },
+          insertIfAbsent(value: HealthProbeRecord) {
+            return new Promise<{ inserted: true; value: HealthProbeRecord }>(
+              (resolve) => {
+                setTimeout(() => {
+                  stored = value;
+                  resolve({ inserted: true, value });
+                }, 3);
+              },
+            );
+          },
+        };
+      },
+    } as unknown as Store;
+    const check = createStorePingCheck({
+      store,
+      collection: healthProbeCollection,
+      clock: fixedClock(NOW),
+      timeoutMs: 5,
+    });
+
+    try {
+      const pending = check.run();
+      await vi.advanceTimersByTimeAsync(5);
+      await expect(pending).resolves.toMatchObject({
+        status: "fail",
+        latencyMs: 5,
+        detail: { reason: "store_ping_timeout" },
+      });
+      expect(stored).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

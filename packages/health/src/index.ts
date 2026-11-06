@@ -57,9 +57,11 @@ export interface HealthProbeRecord {
 }
 
 const DEFAULT_PARTITION = "__health__";
-const DEFAULT_PROBE_ID = "ping";
+const DEFAULT_PROBE_ID_PREFIX = "ping-";
 const DEFAULT_TIMEOUT_MS = 5_000;
+const MAX_PROBE_WRITE_ATTEMPTS = 3;
 const MAX_LOGGED_ERROR_CHARS = 300;
+let fallbackProbeId = 0;
 
 /** Marks a probe that exceeded its own timeout rather than rejecting. */
 class ProbeTimeoutError extends Error {}
@@ -130,13 +132,23 @@ export interface StorePingCheckOptions {
   readonly collection: CollectionDefinition<HealthProbeRecord>;
   /** Defaults to `__health__`. */
   readonly partitionKey?: string;
-  /** Defaults to `ping`. */
+  /** Defaults to a unique id for this check instance. */
   readonly id?: string;
   /** Defaults to `storage`. */
   readonly name?: string;
   /** Defaults to 5000. */
   readonly timeoutMs?: number;
   readonly clock?: Clock;
+}
+
+function createDefaultProbeId(): string {
+  const randomUUID = globalThis.crypto?.randomUUID;
+  if (typeof randomUUID === "function") {
+    return `${DEFAULT_PROBE_ID_PREFIX}${randomUUID.call(globalThis.crypto)}`;
+  }
+
+  fallbackProbeId += 1;
+  return `${DEFAULT_PROBE_ID_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${fallbackProbeId.toString(36)}`;
 }
 
 /**
@@ -148,48 +160,120 @@ export function createStorePingCheck(
 ): HealthCheck {
   const name = options.name ?? "storage";
   const partition = options.partitionKey ?? DEFAULT_PARTITION;
-  const id = options.id ?? DEFAULT_PROBE_ID;
+  const id = options.id ?? createDefaultProbeId();
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const clock = options.clock ?? systemClock;
   const probes = options.store.collection(options.collection);
+  let inFlight: Promise<CheckResult> | undefined;
 
-  return {
-    name,
-    async run() {
-      const started = Date.now();
-      try {
-        const probedAt = clock.now();
-        const record: HealthProbeRecord = { id, partition, probedAt };
-        await withTimeout(probes.put(record), timeoutMs);
-        const got = await withTimeout(probes.get({ partition, id }), timeoutMs);
-        if (got === null || got.probedAt !== probedAt) {
-          return {
-            status: "fail",
-            latencyMs: Date.now() - started,
-            detail: { reason: "round_trip_mismatch" },
-          };
+  async function writeProbe(
+    record: HealthProbeRecord,
+    deadline: number,
+  ): Promise<void> {
+    const key = { partition, id };
+    for (let attempt = 0; attempt < MAX_PROBE_WRITE_ATTEMPTS; attempt += 1) {
+      const current = await withinDeadline(
+        () => probes.getVersioned(key),
+        deadline,
+      );
+      if (current === null) {
+        const result = await withinDeadline(
+          () => probes.insertIfAbsent(record),
+          deadline,
+        );
+        if (result.inserted) {
+          return;
         }
-        return {
-          status: "ok",
-          latencyMs: Date.now() - started,
-        };
-      } catch (error) {
-        // Never surface the underlying error text: store adapter messages
-        // routinely embed account names, URLs, and request ids, and this detail
-        // is served on a public endpoint. Report an enumerated reason instead.
+      } else {
+        const written = await withinDeadline(
+          () => probes.putIfUnchanged(record, current.version),
+          deadline,
+        );
+        if (written) {
+          return;
+        }
+      }
+    }
+    throw new Error("health probe write attempts exhausted");
+  }
+
+  async function runProbe(): Promise<CheckResult> {
+    const started = Date.now();
+    const deadline = started + timeoutMs;
+    try {
+      const probedAt = clock.now();
+      const record: HealthProbeRecord = { id, partition, probedAt };
+      await writeProbe(record, deadline);
+      const got = await withinDeadline(
+        () => probes.getVersioned({ partition, id }),
+        deadline,
+      );
+      if (got === null || got.value.probedAt !== probedAt) {
         return {
           status: "fail",
           latencyMs: Date.now() - started,
-          detail: {
-            reason:
-              error instanceof ProbeTimeoutError
-                ? "store_ping_timeout"
-                : "store_ping_failed",
-          },
+          detail: { reason: "round_trip_mismatch" },
         };
       }
+
+      try {
+        await withinDeadline(
+          () => probes.deleteIfUnchanged({ partition, id }, got.version),
+          deadline,
+        );
+      } catch {
+        // Cleanup is best effort. The verified round trip remains valid, and a
+        // later conditional write can safely reuse this check instance's row.
+      }
+      return {
+        status: "ok",
+        latencyMs: Date.now() - started,
+      };
+    } catch (error) {
+      // Never surface the underlying error text: store adapter messages
+      // routinely embed account names, URLs, and request ids, and this detail
+      // is served on a public endpoint. Report an enumerated reason instead.
+      return {
+        status: "fail",
+        latencyMs: Date.now() - started,
+        detail: {
+          reason:
+            error instanceof ProbeTimeoutError
+              ? "store_ping_timeout"
+              : "store_ping_failed",
+        },
+      };
+    }
+  }
+
+  return {
+    name,
+    run() {
+      if (inFlight !== undefined) {
+        return inFlight;
+      }
+
+      const attempt = runProbe();
+      inFlight = attempt;
+      void attempt.finally(() => {
+        if (inFlight === attempt) {
+          inFlight = undefined;
+        }
+      });
+      return attempt;
     },
   };
+}
+
+function withinDeadline<T>(
+  operation: () => Promise<T>,
+  deadline: number,
+): Promise<T> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    return Promise.reject(new ProbeTimeoutError("probe deadline elapsed"));
+  }
+  return withTimeout(operation(), remainingMs);
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
