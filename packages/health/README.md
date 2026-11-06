@@ -43,3 +43,7 @@ bound your own I/O the way `createStorePingCheck` bounds its `timeoutMs`.
 `createStorePingCheck` writes and reads on every call, so a host serving it on a
 public route SHOULD rate limit or briefly cache that route — see
 [`docs/MONITORING.md`](https://github.com/pegma-dev/health/blob/main/docs/MONITORING.md).
+Construct the check once at the composition root and reuse it for every health
+request. Its default record id is unique to that check instance, which keeps
+replicas from sharing a probe row; pass a stable, replica-specific `id` when a
+deployment needs to reuse the same row across process restarts.

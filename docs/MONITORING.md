@@ -54,6 +54,15 @@ rate limiting (or a short response cache, a few seconds) in front of the route,
 or expose the store ping only on a route scraped by trusted monitors. This
 package deliberately owns no rate limiter.
 
+Construct `createStorePingCheck` once at the composition root and reuse that
+check for every request. Concurrent calls to one check share the same in-flight
+round trip. By default, each constructed check receives its own probe record id,
+so replicas using the same health collection do not overwrite one another. A
+host that constructs checks per request would leave one record per request;
+long-lived hosts should use one check per replica, while short-lived runtimes
+should pass a stable, replica-specific `id` and keep that id distinct from other
+live replicas.
+
 `degraded` still returns HTTP 200 with `ok: true`. If you want to page on
 degraded storage/logging, add a JSON assertion on `$.status` or a log monitor
 instead of relying on status codes alone.

@@ -57,7 +57,7 @@ export interface HealthProbeRecord {
 }
 
 const DEFAULT_PARTITION = "__health__";
-const DEFAULT_PROBE_ID = "ping";
+const DEFAULT_PROBE_ID_PREFIX = "ping-";
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_LOGGED_ERROR_CHARS = 300;
 
@@ -130,7 +130,7 @@ export interface StorePingCheckOptions {
   readonly collection: CollectionDefinition<HealthProbeRecord>;
   /** Defaults to `__health__`. */
   readonly partitionKey?: string;
-  /** Defaults to `ping`. */
+  /** Defaults to a unique id for this check instance. */
   readonly id?: string;
   /** Defaults to `storage`. */
   readonly name?: string;
@@ -148,46 +148,72 @@ export function createStorePingCheck(
 ): HealthCheck {
   const name = options.name ?? "storage";
   const partition = options.partitionKey ?? DEFAULT_PARTITION;
-  const id = options.id ?? DEFAULT_PROBE_ID;
+  const id =
+    options.id ?? `${DEFAULT_PROBE_ID_PREFIX}${globalThis.crypto.randomUUID()}`;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const clock = options.clock ?? systemClock;
   const probes = options.store.collection(options.collection);
+  let inFlight: Promise<CheckResult> | undefined;
+  let previousWriteSettled: Promise<void> = Promise.resolve();
 
-  return {
-    name,
-    async run() {
-      const started = Date.now();
-      try {
-        const probedAt = clock.now();
-        const record: HealthProbeRecord = { id, partition, probedAt };
-        await withTimeout(probes.put(record), timeoutMs);
-        const got = await withTimeout(probes.get({ partition, id }), timeoutMs);
-        if (got === null || got.probedAt !== probedAt) {
-          return {
-            status: "fail",
-            latencyMs: Date.now() - started,
-            detail: { reason: "round_trip_mismatch" },
-          };
-        }
-        return {
-          status: "ok",
-          latencyMs: Date.now() - started,
-        };
-      } catch (error) {
-        // Never surface the underlying error text: store adapter messages
-        // routinely embed account names, URLs, and request ids, and this detail
-        // is served on a public endpoint. Report an enumerated reason instead.
+  async function runProbe(): Promise<CheckResult> {
+    const started = Date.now();
+    try {
+      // A write may outlive its caller's timeout. Let it settle before another
+      // attempt uses the same row, while still bounding how long this call waits.
+      await withTimeout(previousWriteSettled, timeoutMs);
+      const probedAt = clock.now();
+      const record: HealthProbeRecord = { id, partition, probedAt };
+      const write = probes.put(record);
+      previousWriteSettled = write.then(
+        () => undefined,
+        () => undefined,
+      );
+      await withTimeout(write, timeoutMs);
+      const got = await withTimeout(probes.get({ partition, id }), timeoutMs);
+      if (got === null || got.probedAt !== probedAt) {
         return {
           status: "fail",
           latencyMs: Date.now() - started,
-          detail: {
-            reason:
-              error instanceof ProbeTimeoutError
-                ? "store_ping_timeout"
-                : "store_ping_failed",
-          },
+          detail: { reason: "round_trip_mismatch" },
         };
       }
+      return {
+        status: "ok",
+        latencyMs: Date.now() - started,
+      };
+    } catch (error) {
+      // Never surface the underlying error text: store adapter messages
+      // routinely embed account names, URLs, and request ids, and this detail
+      // is served on a public endpoint. Report an enumerated reason instead.
+      return {
+        status: "fail",
+        latencyMs: Date.now() - started,
+        detail: {
+          reason:
+            error instanceof ProbeTimeoutError
+              ? "store_ping_timeout"
+              : "store_ping_failed",
+        },
+      };
+    }
+  }
+
+  return {
+    name,
+    run() {
+      if (inFlight !== undefined) {
+        return inFlight;
+      }
+
+      const attempt = runProbe();
+      inFlight = attempt;
+      void attempt.finally(() => {
+        if (inFlight === attempt) {
+          inFlight = undefined;
+        }
+      });
+      return attempt;
     },
   };
 }
