@@ -349,6 +349,45 @@ describe("createStorePingCheck", () => {
     expect(result.detail).toEqual({ reason: "store_ping_failed" });
   });
 
+  it("bounds repeated conditional write conflicts", async () => {
+    const existing: HealthProbeRecord = {
+      id: "replica-a",
+      partition: "__health__",
+      probedAt: NOW,
+    };
+    let reads = 0;
+    let writes = 0;
+    const store = {
+      collection() {
+        return {
+          async getVersioned() {
+            reads += 1;
+            return { value: existing, version: "unchanged" };
+          },
+          async putIfUnchanged() {
+            writes += 1;
+            return false;
+          },
+        };
+      },
+    } as unknown as Store;
+    const check = createStorePingCheck({
+      store,
+      collection: healthProbeCollection,
+      clock: fixedClock(NOW),
+      id: "replica-a",
+    });
+
+    const result = await check.run();
+
+    expect(result).toMatchObject({
+      status: "fail",
+      detail: { reason: "store_ping_failed" },
+    });
+    expect(reads).toBe(3);
+    expect(writes).toBe(3);
+  });
+
   it("never leaks the store error message into public detail", async () => {
     const brokenStore = {
       collection() {

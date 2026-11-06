@@ -59,6 +59,7 @@ export interface HealthProbeRecord {
 const DEFAULT_PARTITION = "__health__";
 const DEFAULT_PROBE_ID_PREFIX = "ping-";
 const DEFAULT_TIMEOUT_MS = 5_000;
+const MAX_PROBE_WRITE_ATTEMPTS = 3;
 const MAX_LOGGED_ERROR_CHARS = 300;
 let fallbackProbeId = 0;
 
@@ -170,7 +171,7 @@ export function createStorePingCheck(
     deadline: number,
   ): Promise<void> {
     const key = { partition, id };
-    for (;;) {
+    for (let attempt = 0; attempt < MAX_PROBE_WRITE_ATTEMPTS; attempt += 1) {
       const current = await withinDeadline(
         () => probes.getVersioned(key),
         deadline,
@@ -193,6 +194,7 @@ export function createStorePingCheck(
         }
       }
     }
+    throw new Error("health probe write attempts exhausted");
   }
 
   async function runProbe(): Promise<CheckResult> {
